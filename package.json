@@ -1,0 +1,25 @@
+{
+  "name": "codex-stats",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "codex-stats": "./index.ts"
+  },
+  "scripts": {
+    "start": "bun run index.ts",
+    "report": "bun run index.ts report yesterday",
+    "tui": "bun run index.ts tui yesterday",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@opentui/core": "0.2.3",
+    "commander": "14.0.3"
+  }
+}
