@@ -196,6 +196,11 @@ export function renderCommandsHelp(): string {
   return [
     title("Available commands"),
     "",
+    section("Repo-local shortcut:"),
+    "  ./cs today",
+    "  ./cs cost month this-month",
+    "  ./cs chart month this-month",
+    "",
     section("Reports:"),
     "  codex-stats today",
     "  codex-stats yesterday",

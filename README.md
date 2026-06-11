@@ -9,6 +9,9 @@ Created by Codex.
 Run a daily report:
 
 ```bash
+./cs today
+./cs yesterday
+./cs day 2026-05-12
 bun run index.ts today
 bun run index.ts yesterday
 bun run index.ts day 2026-05-12
@@ -36,6 +39,10 @@ bun run index.ts tui --month 2026-05
 Inspect model usage, estimate API cost, or print terminal charts:
 
 ```bash
+./cs commands
+./cs models month this-month
+./cs cost day yesterday
+./cs chart month this-month
 bun run index.ts commands
 bun run index.ts models day yesterday
 bun run index.ts models month this-month

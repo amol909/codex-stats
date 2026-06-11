@@ -58,10 +58,23 @@ test("commands helper lists available CLI commands", () => {
   expect(result.exitCode).toBe(0);
   const output = result.stdout.toString();
   expect(output).toContain("Available commands");
+  expect(output).toContain("./cs today");
   expect(output).toContain("today");
   expect(output).toContain("models month this-month");
   expect(output).toContain("cost day yesterday");
   expect(output).toContain("chart month this-month");
+});
+
+test("repo-local wrapper runs the CLI without typing bun run index.ts", () => {
+  const result = Bun.spawnSync({
+    cmd: ["./cs", "commands"],
+    cwd: process.cwd(),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("Available commands");
 });
 
 function createCodexHome(): string {
