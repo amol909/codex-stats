@@ -11,7 +11,7 @@ export type DayWindow = {
 };
 
 export function resolveDayWindow(day: string, now = new Date()): DayWindow {
-  const label = day === "yesterday" ? previousIstDate(now) : normalizeDate(day);
+  const label = day === "today" ? currentIstDate(now) : day === "yesterday" ? previousIstDate(now) : normalizeDate(day);
   const startMs = Date.parse(`${label}T00:00:00+05:30`);
   const endMs = startMs + 24 * 60 * 60 * 1000;
 
@@ -86,6 +86,11 @@ function previousIstDate(now: Date): string {
   return previous.toISOString().slice(0, 10);
 }
 
+function currentIstDate(now: Date): string {
+  const istNow = new Date(now.getTime() + IST_OFFSET_MS);
+  return istNow.toISOString().slice(0, 10);
+}
+
 function currentIstMonth(now: Date): string {
   const istNow = new Date(now.getTime() + IST_OFFSET_MS);
   return istNow.toISOString().slice(0, 7);
@@ -93,7 +98,7 @@ function currentIstMonth(now: Date): string {
 
 function normalizeDate(day: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-    throw new Error(`Expected "yesterday" or YYYY-MM-DD, got "${day}"`);
+    throw new Error(`Expected "today", "yesterday", or YYYY-MM-DD, got "${day}"`);
   }
   return day;
 }

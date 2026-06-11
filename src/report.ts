@@ -5,6 +5,14 @@ import { resolveDayWindow, resolveMonthWindow, type DayWindow } from "./time";
 
 export type ReportMode = "minimal" | "verbose";
 
+export type TokenUsage = {
+  input: number;
+  cachedInput: number;
+  output: number;
+  reasoningOutput: number;
+  total: number;
+};
+
 export type SessionSummary = {
   id: string;
   title: string;
@@ -15,6 +23,7 @@ export type SessionSummary = {
   spanMs: number;
   crossesMidnight: boolean;
   tokens: number;
+  tokenUsage: TokenUsage;
   model: string;
   reasoningEffort: string;
   rolloutPath: string;
@@ -30,7 +39,9 @@ export type CodexReport = {
     sessions: number;
     spanMs: number;
     tokens: number;
+    tokenUsage: TokenUsage;
     workspaces: Array<{ workspace: string; sessions: number; tokens: number; spanMs: number }>;
+    models: Array<{ model: string; sessions: number; tokens: number; tokenUsage: TokenUsage; spanMs: number }>;
     tools: Array<{ tool: string; count: number }>;
     days: Array<{ date: string; sessions: number; tokens: number; spanMs: number }>;
   };
@@ -104,7 +115,7 @@ function summarizeSession(row: ThreadRow, day: DayWindow): SessionSummary {
   const telemetry = parseRollout(row.rollout_path);
   const createdAtMs = row.created_at * 1000;
   const updatedAtMs = row.updated_at * 1000;
-  const tokens = chooseTokenTotal(row.tokens_used, telemetry.maxTotalTokens);
+  const tokens = chooseTokenTotal(row.tokens_used, telemetry.tokenUsage.total);
   const title = cleanText(row.title) || cleanText(row.first_user_message) || basename(row.cwd) || row.id;
   const finalMessage = cleanText(telemetry.finalMessage);
   const summary = briefSummary(title, finalMessage, row.cwd);
@@ -119,6 +130,7 @@ function summarizeSession(row: ThreadRow, day: DayWindow): SessionSummary {
     spanMs: Math.max(0, updatedAtMs - createdAtMs),
     crossesMidnight: updatedAtMs >= day.endMs,
     tokens,
+    tokenUsage: { ...telemetry.tokenUsage, total: tokens },
     model: row.model ?? "unknown",
     reasoningEffort: row.reasoning_effort ?? "unknown",
     rolloutPath: row.rollout_path,
@@ -129,12 +141,12 @@ function summarizeSession(row: ThreadRow, day: DayWindow): SessionSummary {
 }
 
 function parseRollout(path: string): {
-  maxTotalTokens: number;
+  tokenUsage: TokenUsage;
   finalMessage: string;
   toolCalls: Record<string, number>;
 } {
   const out = {
-    maxTotalTokens: 0,
+    tokenUsage: emptyTokenUsage(),
     finalMessage: "",
     toolCalls: {} as Record<string, number>,
   };
@@ -154,9 +166,9 @@ function parseRollout(path: string): {
 
     const payload = event.payload;
     if (event.type === "event_msg" && payload?.type === "token_count") {
-      const total = payload.info?.total_token_usage?.total_tokens;
-      if (typeof total === "number") {
-        out.maxTotalTokens = Math.max(out.maxTotalTokens, total);
+      const tokenUsage = parseTokenUsage(payload.info?.total_token_usage);
+      if (tokenUsage.total > out.tokenUsage.total) {
+        out.tokenUsage = tokenUsage;
       }
     }
 
@@ -183,8 +195,35 @@ function chooseTokenTotal(dbTokens: number, rolloutTokens: number): number {
   return rolloutTokens;
 }
 
+function parseTokenUsage(value: unknown): TokenUsage {
+  if (!value || typeof value !== "object") return emptyTokenUsage();
+  const usage = value as Record<string, unknown>;
+  return {
+    input: numberField(usage.input_tokens),
+    cachedInput: numberField(usage.cached_input_tokens),
+    output: numberField(usage.output_tokens),
+    reasoningOutput: numberField(usage.reasoning_output_tokens),
+    total: numberField(usage.total_tokens),
+  };
+}
+
+function numberField(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function emptyTokenUsage(): TokenUsage {
+  return {
+    input: 0,
+    cachedInput: 0,
+    output: 0,
+    reasoningOutput: 0,
+    total: 0,
+  };
+}
+
 function summarizeTotals(sessions: SessionSummary[]): CodexReport["totals"] {
   const workspaceMap = new Map<string, { workspace: string; sessions: number; tokens: number; spanMs: number }>();
+  const modelMap = new Map<string, { model: string; sessions: number; tokens: number; tokenUsage: TokenUsage; spanMs: number }>();
   const toolMap = new Map<string, number>();
   const dayMap = new Map<string, { date: string; sessions: number; tokens: number; spanMs: number }>();
 
@@ -199,6 +238,19 @@ function summarizeTotals(sessions: SessionSummary[]): CodexReport["totals"] {
     workspace.tokens += session.tokens;
     workspace.spanMs += session.spanMs;
     workspaceMap.set(session.workspace, workspace);
+
+    const model = modelMap.get(session.model) ?? {
+      model: session.model,
+      sessions: 0,
+      tokens: 0,
+      tokenUsage: emptyTokenUsage(),
+      spanMs: 0,
+    };
+    model.sessions += 1;
+    model.tokens += session.tokens;
+    model.tokenUsage = sumTokenUsage([model.tokenUsage, session.tokenUsage]);
+    model.spanMs += session.spanMs;
+    modelMap.set(session.model, model);
 
     for (const [tool, count] of Object.entries(session.toolCalls)) {
       toolMap.set(tool, (toolMap.get(tool) ?? 0) + count);
@@ -216,12 +268,27 @@ function summarizeTotals(sessions: SessionSummary[]): CodexReport["totals"] {
     sessions: sessions.length,
     spanMs: sessions.reduce((sum, session) => sum + session.spanMs, 0),
     tokens: sessions.reduce((sum, session) => sum + session.tokens, 0),
+    tokenUsage: sumTokenUsage(sessions.map((session) => session.tokenUsage)),
     workspaces: [...workspaceMap.values()].sort((a, b) => b.spanMs - a.spanMs || b.tokens - a.tokens),
+    models: [...modelMap.values()].sort((a, b) => b.tokens - a.tokens || a.model.localeCompare(b.model)),
     tools: [...toolMap.entries()]
       .map(([tool, count]) => ({ tool, count }))
       .sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool)),
     days: [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date)),
   };
+}
+
+function sumTokenUsage(usages: TokenUsage[]): TokenUsage {
+  return usages.reduce(
+    (sum, usage) => ({
+      input: sum.input + usage.input,
+      cachedInput: sum.cachedInput + usage.cachedInput,
+      output: sum.output + usage.output,
+      reasoningOutput: sum.reasoningOutput + usage.reasoningOutput,
+      total: sum.total + usage.total,
+    }),
+    emptyTokenUsage(),
+  );
 }
 
 function istDateKey(epochMs: number): string {

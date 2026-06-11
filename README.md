@@ -9,6 +9,9 @@ Created by Codex.
 Run a daily report:
 
 ```bash
+bun run index.ts today
+bun run index.ts yesterday
+bun run index.ts day 2026-05-12
 bun run index.ts report yesterday
 bun run index.ts report yesterday --mode verbose
 bun run index.ts report 2026-05-12 --mode verbose
@@ -30,11 +33,29 @@ bun run index.ts tui --month this-month
 bun run index.ts tui --month 2026-05
 ```
 
+Inspect model usage, estimate API cost, or print terminal charts:
+
+```bash
+bun run index.ts commands
+bun run index.ts models day yesterday
+bun run index.ts models month this-month
+bun run index.ts cost day yesterday
+bun run index.ts cost month 2026-05
+bun run index.ts chart month this-month
+bun run index.ts chart day today
+```
+
 If the package is linked as a binary, the same commands are available through `codex-stats`:
 
 ```bash
+codex-stats commands
+codex-stats today
+codex-stats day 2026-05-12
 codex-stats report yesterday
 codex-stats month this-month
+codex-stats models month this-month
+codex-stats cost day yesterday
+codex-stats chart month this-month
 codex-stats tui
 ```
 
@@ -61,6 +82,9 @@ The report uses the decisions from the planning session:
 - Monthly reports use the same start-day ownership rule.
 - Duration is wall-clock session span, labeled as span.
 - Tokens use `threads.tokens_used` first, then max cumulative token events from rollout JSONL.
+- Token breakdowns use cumulative `token_count` rollout events: input, cached input, output, and reasoning output.
+- Model reports aggregate sessions, span, total tokens, and token breakdown by Codex model.
+- Cost reports estimate API spend from the local token breakdown and a dated OpenAI API pricing table. They are estimates only and do not represent ChatGPT Plus/Pro billing.
 - Summaries prefer thread title, then task completion message, then workspace folder.
 
 ## Data Sources
