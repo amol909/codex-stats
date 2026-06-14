@@ -38,6 +38,9 @@ codex-stats month this-month
 codex-stats tui
 ```
 
+Reports include an estimated cost using OpenAI API Standard pricing. This is an API-equivalent estimate, not an actual Codex or ChatGPT bill.
+The checked-in price table is sourced from `https://developers.openai.com/api/docs/pricing` and was last checked on 2026-05-15.
+
 ## TUI Filters
 
 The TUI has built-in period filters so you do not need to remember CLI flags while browsing usage:
@@ -59,8 +62,12 @@ The report uses the decisions from the planning session:
 - `this-month` is the current calendar month in `Asia/Kolkata`.
 - Sessions belong to the day they started.
 - Monthly reports use the same start-day ownership rule.
-- Duration is wall-clock session span, labeled as span.
+- Calendar period is the wall-clock length of the selected day or month.
+- Thread span is the sum of session lifetimes from `created_at` to `updated_at`; it can exceed the calendar period when sessions overlap or remain open for days.
 - Tokens use `threads.tokens_used` first, then max cumulative token events from rollout JSONL.
+- Cost uses rollout `input_tokens`, `cached_input_tokens`, and `output_tokens` with checked-in Standard API prices.
+- Long-context Standard rates are used when a model has long-context pricing and a recorded prompt exceeds 272K input tokens.
+- Reasoning output tokens are not added again because they are included in output tokens.
 - Summaries prefer thread title, then task completion message, then workspace folder.
 
 ## Data Sources

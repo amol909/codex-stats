@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { basename, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { emptyTokenUsage, estimateStandardCost, type CostEstimate, type TokenUsage } from "./pricing";
 import { resolveDayWindow, resolveMonthWindow, type DayWindow } from "./time";
 
 export type ReportMode = "minimal" | "verbose";
@@ -15,6 +16,8 @@ export type SessionSummary = {
   spanMs: number;
   crossesMidnight: boolean;
   tokens: number;
+  tokenUsage: TokenUsage;
+  costEstimate: CostEstimate | null;
   model: string;
   reasoningEffort: string;
   rolloutPath: string;
@@ -30,9 +33,19 @@ export type CodexReport = {
     sessions: number;
     spanMs: number;
     tokens: number;
-    workspaces: Array<{ workspace: string; sessions: number; tokens: number; spanMs: number }>;
+    estimatedCostUsd: number;
+    costedSessions: number;
+    unpricedModels: string[];
+    workspaces: Array<{
+      workspace: string;
+      sessions: number;
+      tokens: number;
+      spanMs: number;
+      estimatedCostUsd: number;
+      costedSessions: number;
+    }>;
     tools: Array<{ tool: string; count: number }>;
-    days: Array<{ date: string; sessions: number; tokens: number; spanMs: number }>;
+    days: Array<{ date: string; sessions: number; tokens: number; spanMs: number; estimatedCostUsd: number }>;
   };
 };
 
@@ -105,6 +118,8 @@ function summarizeSession(row: ThreadRow, day: DayWindow): SessionSummary {
   const createdAtMs = row.created_at * 1000;
   const updatedAtMs = row.updated_at * 1000;
   const tokens = chooseTokenTotal(row.tokens_used, telemetry.maxTotalTokens);
+  const model = row.model ?? "unknown";
+  const costEstimate = estimateStandardCost(model, telemetry.tokenUsage);
   const title = cleanText(row.title) || cleanText(row.first_user_message) || basename(row.cwd) || row.id;
   const finalMessage = cleanText(telemetry.finalMessage);
   const summary = briefSummary(title, finalMessage, row.cwd);
@@ -119,7 +134,9 @@ function summarizeSession(row: ThreadRow, day: DayWindow): SessionSummary {
     spanMs: Math.max(0, updatedAtMs - createdAtMs),
     crossesMidnight: updatedAtMs >= day.endMs,
     tokens,
-    model: row.model ?? "unknown",
+    tokenUsage: telemetry.tokenUsage,
+    costEstimate,
+    model,
     reasoningEffort: row.reasoning_effort ?? "unknown",
     rolloutPath: row.rollout_path,
     summary,
@@ -130,11 +147,13 @@ function summarizeSession(row: ThreadRow, day: DayWindow): SessionSummary {
 
 function parseRollout(path: string): {
   maxTotalTokens: number;
+  tokenUsage: TokenUsage;
   finalMessage: string;
   toolCalls: Record<string, number>;
 } {
   const out = {
     maxTotalTokens: 0,
+    tokenUsage: emptyTokenUsage(),
     finalMessage: "",
     toolCalls: {} as Record<string, number>,
   };
@@ -154,9 +173,16 @@ function parseRollout(path: string): {
 
     const payload = event.payload;
     if (event.type === "event_msg" && payload?.type === "token_count") {
-      const total = payload.info?.total_token_usage?.total_tokens;
-      if (typeof total === "number") {
-        out.maxTotalTokens = Math.max(out.maxTotalTokens, total);
+      const totalUsage = parseTokenUsage(payload.info?.total_token_usage);
+      if (totalUsage && totalUsage.totalTokens >= out.tokenUsage.totalTokens) {
+        totalUsage.maxPromptInputTokens = out.tokenUsage.maxPromptInputTokens;
+        out.tokenUsage = totalUsage;
+        out.maxTotalTokens = Math.max(out.maxTotalTokens, totalUsage.totalTokens);
+      }
+
+      const lastInputTokens = payload.info?.last_token_usage?.input_tokens;
+      if (typeof lastInputTokens === "number") {
+        out.tokenUsage.maxPromptInputTokens = Math.max(out.tokenUsage.maxPromptInputTokens, lastInputTokens);
       }
     }
 
@@ -178,15 +204,37 @@ function parseRollout(path: string): {
   return out;
 }
 
+function parseTokenUsage(value: any): TokenUsage | null {
+  const totalTokens = numberValue(value?.total_tokens);
+  if (!totalTokens) return null;
+
+  return {
+    inputTokens: numberValue(value?.input_tokens),
+    cachedInputTokens: numberValue(value?.cached_input_tokens),
+    outputTokens: numberValue(value?.output_tokens),
+    reasoningOutputTokens: numberValue(value?.reasoning_output_tokens),
+    totalTokens,
+    maxPromptInputTokens: 0,
+  };
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 function chooseTokenTotal(dbTokens: number, rolloutTokens: number): number {
   if (Number.isFinite(dbTokens) && dbTokens > 0) return dbTokens;
   return rolloutTokens;
 }
 
 function summarizeTotals(sessions: SessionSummary[]): CodexReport["totals"] {
-  const workspaceMap = new Map<string, { workspace: string; sessions: number; tokens: number; spanMs: number }>();
+  const workspaceMap = new Map<
+    string,
+    { workspace: string; sessions: number; tokens: number; spanMs: number; estimatedCostUsd: number; costedSessions: number }
+  >();
   const toolMap = new Map<string, number>();
-  const dayMap = new Map<string, { date: string; sessions: number; tokens: number; spanMs: number }>();
+  const dayMap = new Map<string, { date: string; sessions: number; tokens: number; spanMs: number; estimatedCostUsd: number }>();
+  const unpricedModels = new Set<string>();
 
   for (const session of sessions) {
     const workspace = workspaceMap.get(session.workspace) ?? {
@@ -194,10 +242,16 @@ function summarizeTotals(sessions: SessionSummary[]): CodexReport["totals"] {
       sessions: 0,
       tokens: 0,
       spanMs: 0,
+      estimatedCostUsd: 0,
+      costedSessions: 0,
     };
     workspace.sessions += 1;
     workspace.tokens += session.tokens;
     workspace.spanMs += session.spanMs;
+    if (session.costEstimate) {
+      workspace.estimatedCostUsd += session.costEstimate.usd;
+      workspace.costedSessions += 1;
+    }
     workspaceMap.set(session.workspace, workspace);
 
     for (const [tool, count] of Object.entries(session.toolCalls)) {
@@ -205,17 +259,27 @@ function summarizeTotals(sessions: SessionSummary[]): CodexReport["totals"] {
     }
 
     const date = istDateKey(session.createdAtMs);
-    const dayTotal = dayMap.get(date) ?? { date, sessions: 0, tokens: 0, spanMs: 0 };
+    const dayTotal = dayMap.get(date) ?? { date, sessions: 0, tokens: 0, spanMs: 0, estimatedCostUsd: 0 };
     dayTotal.sessions += 1;
     dayTotal.tokens += session.tokens;
     dayTotal.spanMs += session.spanMs;
+    dayTotal.estimatedCostUsd += session.costEstimate?.usd ?? 0;
     dayMap.set(date, dayTotal);
+
+    if (!session.costEstimate && session.tokenUsage.totalTokens > 0) {
+      unpricedModels.add(session.model);
+    }
   }
+
+  const estimatedCostUsd = sessions.reduce((sum, session) => sum + (session.costEstimate?.usd ?? 0), 0);
 
   return {
     sessions: sessions.length,
     spanMs: sessions.reduce((sum, session) => sum + session.spanMs, 0),
     tokens: sessions.reduce((sum, session) => sum + session.tokens, 0),
+    estimatedCostUsd,
+    costedSessions: sessions.filter((session) => session.costEstimate).length,
+    unpricedModels: [...unpricedModels].sort(),
     workspaces: [...workspaceMap.values()].sort((a, b) => b.spanMs - a.spanMs || b.tokens - a.tokens),
     tools: [...toolMap.entries()]
       .map(([tool, count]) => ({ tool, count }))

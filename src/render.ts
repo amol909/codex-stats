@@ -5,18 +5,21 @@ export function renderTextReport(report: CodexReport, mode: ReportMode): string 
   const lines: string[] = [];
   lines.push(`Codex stats for ${report.day.title} (Asia/Kolkata)`);
   lines.push("");
+  lines.push(sectionDivider("Summary"));
   lines.push(`Sessions: ${report.totals.sessions}`);
-  lines.push(`Total span: ${formatDuration(report.totals.spanMs)}`);
+  lines.push(`Calendar period: ${formatDuration(report.day.endMs - report.day.startMs)}`);
+  lines.push(`Total thread span: ${formatDuration(report.totals.spanMs)}`);
   lines.push(`Total tokens: ${formatTokens(report.totals.tokens)}`);
+  lines.push(`Estimated cost: ${formatCost(report.totals.estimatedCostUsd)} standard API-equivalent`);
 
   if (report.totals.workspaces.length > 0) {
     lines.push("");
-    lines.push("Top workspaces:");
+    lines.push(sectionDivider("Top workspaces"));
     for (const workspace of report.totals.workspaces.slice(0, mode === "minimal" ? 5 : 10)) {
       lines.push(
         `- ${workspace.workspace}: ${workspace.sessions} session(s), ${formatDuration(
           workspace.spanMs,
-        )}, ${formatTokens(workspace.tokens)}`,
+        )} thread span, ${formatTokens(workspace.tokens)}, ${formatCost(workspace.estimatedCostUsd)} est`,
       );
     }
   }
@@ -24,16 +27,18 @@ export function renderTextReport(report: CodexReport, mode: ReportMode): string 
   if (mode === "verbose") {
     if (report.day.kind === "month" && report.totals.days.length > 0) {
       lines.push("");
-      lines.push("Daily activity:");
+      lines.push(sectionDivider("Daily activity"));
       for (const day of report.totals.days) {
         lines.push(
-          `- ${day.date}: ${day.sessions} session(s), ${formatDuration(day.spanMs)}, ${formatTokens(day.tokens)}`,
+          `- ${day.date}: ${day.sessions} session(s), ${formatDuration(day.spanMs)} thread span, ${formatTokens(
+            day.tokens,
+          )}, ${formatCost(day.estimatedCostUsd)} est`,
         );
       }
     }
 
     lines.push("");
-    lines.push("Sessions:");
+    lines.push(sectionDivider("Sessions"));
     for (const session of report.sessions) {
       const midnight =
         session.crossesMidnight && report.day.kind === "day"
@@ -44,13 +49,20 @@ export function renderTextReport(report: CodexReport, mode: ReportMode): string 
       lines.push(
         `- ${formatIstTime(session.createdAtMs)}-${formatIstTime(session.updatedAtMs)} ${session.workspace}: ${
           session.summary
-        } (${formatDuration(session.spanMs)}, ${formatTokens(session.tokens)}, ${session.model}${midnight})`,
+        } (${formatDuration(session.spanMs)} thread span, ${formatTokens(session.tokens)}, ${session.model}, ${formatCost(
+          session.costEstimate?.usd ?? 0,
+        )} est${midnight})`,
       );
+    }
+
+    if (report.totals.unpricedModels.length > 0) {
+      lines.push("");
+      lines.push(`Unpriced models: ${report.totals.unpricedModels.join(", ")}`);
     }
 
     if (report.totals.tools.length > 0) {
       lines.push("");
-      lines.push("Tools:");
+      lines.push(sectionDivider("Tools"));
       for (const tool of report.totals.tools.slice(0, 10)) {
         lines.push(`- ${tool.tool}: ${tool.count}`);
       }
@@ -76,18 +88,20 @@ export function renderTuiText(report: CodexReport): string {
     `${formatIstDateTime(report.day.startMs)} -> ${formatIstDateTime(report.day.endMs - 1)}`,
     "Filters: y yesterday  t/d today  m this month  ←/→ prev/next  q quit",
     "",
+    sectionDivider("Summary", 72),
     sparkleLine(report),
     "",
     headlineStats(report),
+    periodStats(report),
     "",
-    ...(report.day.kind === "month" ? ["Daily token trend", ...dailyTrend(report), ""] : []),
-    "Workspace span",
+    ...(report.day.kind === "month" ? [sectionDivider("Daily token trend", 72), ...dailyTrend(report), ""] : []),
+    sectionDivider("Workspace thread span", 72),
     ...workspaceBars(report),
     "",
-    "Top tools",
+    sectionDivider("Top tools", 72),
     ...toolBars(report),
     "",
-    "Longest sessions",
+    sectionDivider("Longest sessions", 72),
     ...sessions.map(
       (session, index) =>
         `${index + 1}. ${formatIstTime(session.createdAtMs)}  ${session.workspace.padEnd(18).slice(0, 18)} ${formatDuration(
@@ -121,9 +135,14 @@ function trimScale(value: number): string {
 
 function headlineStats(report: CodexReport): string {
   const sessions = `${report.totals.sessions} sessions`;
-  const span = `${formatDuration(report.totals.spanMs)} span`;
+  const span = `${formatDuration(report.totals.spanMs)} thread span`;
   const tokens = `${formatCompactTokens(report.totals.tokens)} tokens`;
-  return `${sessions.padEnd(18)} ${span.padEnd(18)} ${tokens}`;
+  const cost = `${formatCost(report.totals.estimatedCostUsd)} est`;
+  return `${sessions.padEnd(16)} ${span.padEnd(24)} ${tokens.padEnd(16)} ${cost}`;
+}
+
+function periodStats(report: CodexReport): string {
+  return `${formatDuration(report.day.endMs - report.day.startMs)} calendar period`;
 }
 
 function workspaceBars(report: CodexReport): string[] {
@@ -137,7 +156,8 @@ function workspaceBars(report: CodexReport): string[] {
     const bar = progressBar(workspace.spanMs, max, 24);
     const span = formatDuration(workspace.spanMs).padStart(8);
     const tokens = formatCompactTokens(workspace.tokens).padStart(8);
-    return `${label} ${bar} ${span}  ${tokens}`;
+    const cost = formatCost(workspace.estimatedCostUsd).padStart(9);
+    return `${label} ${bar} ${span}  ${tokens}  ${cost}`;
   });
 }
 
@@ -185,8 +205,21 @@ function sparkleLine(report: CodexReport): string {
   if (report.totals.sessions === 0) return "Quiet day. No Codex trails yet.";
 
   const busiest = report.totals.workspaces[0]?.workspace ?? "Codex";
+  const period = report.day.kind === "month" ? "period" : "day";
   const hours = report.totals.spanMs / 3_600_000;
-  if (hours >= 8) return `Focus streak: ${busiest} carried the day.`;
+  if (hours >= 8) return `Focus streak: ${busiest} carried the ${period}.`;
   if (report.totals.sessions >= 5) return `Many small missions. ${busiest} led the board.`;
   return `Light flight log. ${busiest} was the main stop.`;
+}
+
+function sectionDivider(label: string, width = 64): string {
+  const text = ` ${label} `;
+  const remaining = Math.max(0, width - text.length);
+  return `${text}${"-".repeat(remaining)}`;
+}
+
+function formatCost(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "$0.00";
+  if (value < 0.01) return "<$0.01";
+  return `$${value.toFixed(value >= 100 ? 0 : 2)}`;
 }
